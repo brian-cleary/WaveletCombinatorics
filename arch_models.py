@@ -1,4 +1,5 @@
 from statsmodels.tsa import ar_model,arima_model,stattools
+from statsmodels.regression import linear_model
 import numpy as np
 import pylab
 from mpl_toolkits.mplot3d import Axes3D
@@ -30,14 +31,50 @@ def garch_group(Y,q0=1,p=1,q=1,do_plots=False):
     else:
         return residuals,r2
 
-def cluster_vs_meta_granger(c,X,M,lags=7,thresh=0.05):
+def cluster_vs_meta_granger(c,X,M,Ml,lags=7,thresh=0.05):
 	x1 = np.average(X[:,c],1)
 	R = []
 	for x2 in M.T:
 		have_values = np.isfinite(x2)
 		result = stattools.grangercausalitytests(np.transpose([x1[have_values],x2[have_values]]),lags)
 		R.append([(result[i+1][0]['ssr_ftest'][1],i+1) for i in range(lags) if result[i+1][0]['ssr_ftest'][1] < thresh])
-	return R
+	RM = []
+	for i,r in enumerate(R):
+		if r:
+			avgLag = np.average([x[1] for x in r])
+			avgPvalue = np.average([x[0] for x in r])
+			RM.append((avgPvalue,Ml[i],avgLag))
+	return sorted(RM)
+
+def cluster_vs_meta_granger_TM(c,X,M,Ml,lags=7,thresh=0.05):
+	# use the Toda Yamamoto method (environmental data is stationary, but clusters are not)
+	x1 = X[c].sum(0)
+	adf = stattools.adfuller(x1,maxlag=lags)
+	if (adf[0] > adf[4]['5%']):
+		m1 = adf[2]
+	else:
+		m1 = 0
+	R = []
+	for j,x2 in enumerate(M):
+		have_values = np.isfinite(x2)
+		xi = x1[have_values]
+		x2i = x2[have_values]
+		adf = stattools.adfuller(x2i,maxlag=lags)
+		if (adf[0] > adf[4]['5%']):
+			m2 = adf[2]
+		else:
+			m2 = 0
+		m = max(m1,m2)
+		y = [xi[i+max(0,m2-m1):len(xi)+i-(m1+lags)] for i in range(m1+lags)] + [x2i[i+max(0,m1-m2):len(xi)+i-(m2+lags)] for i in range(m2+lags)]
+		y = np.array(y).T
+		lm = linear_model.OLS(xi[max(m1,m2)+lags:],y)
+		result = lm.fit()
+		Restr = np.eye(y.shape[1])[m+lags:]
+		wald = result.wald_test(Restr)
+		if wald.pvalue < thresh:
+			R.append((wald.pvalue,Ml[j]))
+	return m,sorted(R)
+		
 
 def cluster_vs_cluster_granger(C,X,lags=4,thresh=0.01):
 	Xc = [np.average(X[:,c],1) for c in C]
@@ -57,7 +94,16 @@ def cluster_vs_cluster_granger(C,X,lags=4,thresh=0.01):
 				if pv < thresh:
 					R.append((pv,(j,i,l+1)))
 	return sorted(R)
-	
+
+def cluster_vs_meta_correlation(c,X,M,Ml,thresh=0.1):
+	x = np.average(X[:,c],1)
+	dist = []
+	for i,m in enumerate(M.T):
+		have_values = np.isfinite(m)
+		d = distance.correlation(x[have_values],m[have_values])
+		if d < thresh:
+			dist.append((1-d,Ml[i]))
+	return sorted(dist,reverse=True)
 
 def plot_cluster_meta(c,X,m):
 	x = np.average(X[:,c],1)
